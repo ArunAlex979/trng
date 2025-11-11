@@ -121,11 +121,6 @@ def main():
                 
                 logging.info(f"Generated 256-bit Secure Key: {secure_key.hex()}")
 
-                # 7. Save the key to a file
-                with open(KEYS_OUTPUT_FILE, 'a') as f:
-                    f.write(secure_key.hex() + '\n')
-                logging.info(f"Key saved to {KEYS_OUTPUT_FILE}")
-
                 # 8. Test the randomness of the generated key
                 key_bit_sequence = "".join(format(byte, '08b') for byte in secure_key)
                 test_results = randomness_tester.run_all_tests(key_bit_sequence)
@@ -134,6 +129,16 @@ def main():
                 for test_name, result in test_results.items():
                     status = "PASSED" if result['passed'] else "FAILED"
                     logging.info(f"  - {test_name}: {status} (p-value: {result['p_value']:.6f})")
+
+                # Conditional saving based on randomness tests
+                if not test_results['longest_run_of_ones_test']['passed'] or \
+                   not test_results['discrete_fourier_transform_test']['passed']:
+                    logging.warning("Key failed one or more critical randomness tests. Not saving key.")
+                else:
+                    # 7. Save the key to a file
+                    with open(KEYS_OUTPUT_FILE, 'a') as f:
+                        f.write(secure_key.hex() + '\n')
+                    logging.info(f"Key saved to {KEYS_OUTPUT_FILE}")
 
                 # 9. Clear the pool for the next round
                 entropy_extractor.clear_entropy_pool()
