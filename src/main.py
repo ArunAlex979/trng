@@ -121,8 +121,12 @@ def main():
                 
                 logging.info(f"Generated 256-bit Secure Key: {secure_key.hex()}")
 
-                # 8. Test the randomness of the generated key
+                # Calculate and log min-entropy per bit
                 key_bit_sequence = "".join(format(byte, '08b') for byte in secure_key)
+                min_entropy = randomness_tester.min_entropy_per_bit(key_bit_sequence)
+                logging.info(f"Min-Entropy per bit: {min_entropy:.4f}")
+
+                # 8. Test the randomness of the generated key
                 test_results = randomness_tester.run_all_tests(key_bit_sequence)
                 
                 logging.info("Randomness Test Results:")

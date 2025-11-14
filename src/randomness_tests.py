@@ -190,6 +190,30 @@ class RandomnessTester:
 
         return p_value, p_value >= self.alpha
 
+    def min_entropy_per_bit(self, bit_sequence):
+        """
+        Estimates the min-entropy per bit of a binary sequence.
+        H_min(X) = -log2(max(P(x))), where P(x) is the probability of the most likely outcome.
+        For a binary sequence, this considers the probability of '0' or '1'.
+        """
+        n = len(bit_sequence)
+        if n == 0:
+            return 0.0
+
+        num_zeros = bit_sequence.count('0')
+        num_ones = bit_sequence.count('1')
+
+        prob_zero = num_zeros / n
+        prob_one = num_ones / n
+
+        max_prob = max(prob_zero, prob_one)
+
+        if max_prob == 0: # Should not happen for non-empty sequence
+            return 0.0
+        
+        # Ensure math.log2 is imported, it is already imported at the top of the file
+        return -math.log2(max_prob)
+
 
 if __name__ == '__main__':
     # Example usage
