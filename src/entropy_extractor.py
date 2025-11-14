@@ -12,13 +12,19 @@ class EntropyExtractor:
         """
         self.entropy_pool = bytearray()
 
-    def extract_entropy(self, tracked_objects, frame_width, frame_height, timestamp_ns):
+    def extract_entropy(self, tracked_objects, frame_width, frame_height, timestamp_ns, return_only=False):
         """
         Extracts entropy using a quantization scheme:
         [16 bits timestamp | 8 bits id | 10 bits x | 10 bits y | 8 bits area] = 52 bits
+        
+        Args:
+            return_only (bool): If True, returns the extracted data instead of adding to the pool.
         """
         if not tracked_objects:
-            return
+            return None if return_only else None
+
+        local_pool = bytearray()
+        target_pool = local_pool if return_only else self.entropy_pool
 
         for obj in tracked_objects:
             obj_id = obj['id']
@@ -46,11 +52,11 @@ class EntropyExtractor:
                             (y_bits << 8) | \
                             area_bits
             
-            # Append the 52 bits (6.5 bytes) to the entropy pool
-            # We can't append 6.5 bytes, so we'll append 7 bytes and discard the top 4 bits.
-            # Or, more simply, convert the integer to bytes. The number of bytes will vary.
-            # Let's use a fixed number of bytes (7) to make it consistent.
-            self.entropy_pool.extend(combined_data.to_bytes(7, 'big'))
+            # Append the 52 bits (7 bytes) to the target pool
+            target_pool.extend(combined_data.to_bytes(7, 'big'))
+
+        if return_only:
+            return local_pool
 
 
     def get_entropy_pool(self):
