@@ -2,6 +2,7 @@ import os
 import time
 import logging
 import random
+from datetime import datetime
 import cv2
 import numpy as np
 
@@ -30,12 +31,16 @@ def main():
     ENTROPY_POOL_SIZE_BITS = 2048
     KEY_SIZE_BYTES = 32
     VIS_WIDTH, VIS_HEIGHT = 512, 512
+    MIN_REQUIRED_SOURCES = 1
+    FISH_SUBSET_SIZE = 10
 
     logging.info("Initializing TRNG components...")
+    start_time = time.time()
+    keys_saved_count = 0
     video_capture = MultiVideoCapture(STREAM_URLS_FILE, max_streams=3)
     fish_detector = FishDetector(
         model_path=os.path.join(SCRIPT_DIR, "..", "yolov8n.pt"),
-        allowed_classes=[],  # Allow all by default; set to [0] if class 0 = fish
+        allowed_classes=[0],  # Class 0 = fish (assumption, verify with model)
         min_area=60,
         max_area_ratio=0.25,
         iou_threshold=0.5
@@ -70,16 +75,23 @@ def main():
 
             moving_objects = [obj for obj in tracked_objects if not obj.get("is_static", False)]
 
+            # --- Random fish selection ---
+            if len(moving_objects) > FISH_SUBSET_SIZE:
+                selected_objects = random.sample(moving_objects, FISH_SUBSET_SIZE)
+            else:
+                selected_objects = moving_objects
+            # --- End random fish selection ---
+
             def motion_energy(obj):
                 vx, vy = obj.get("speed_vector", (0, 0))
                 return float(np.linalg.norm([vx, vy]) + 1e-6)
 
-            if moving_objects:
-                weights = np.array([motion_energy(o) for o in moving_objects], dtype=np.float64)
+            if selected_objects:
+                weights = np.array([motion_energy(o) for o in selected_objects], dtype=np.float64)
                 weights = weights / (weights.sum() if weights.sum() > 0 else 1.0)
                 
                 entropy_extractor.extract_entropy(
-                    moving_objects, frame_width, frame_height, timestamp_ns, source_id=current_stream_url
+                    selected_objects, frame_width, frame_height, timestamp_ns, source_id=current_stream_url
                 )
                 if current_stream_url:
                     entropy_extractor.sources_seen.add(current_stream_url)
@@ -135,6 +147,9 @@ def main():
             entropy_vis_color = cv2.cvtColor(entropy_bitmap, cv2.COLOR_GRAY2BGR)
             histogram_vis_color = cv2.cvtColor(histogram_image, cv2.COLOR_GRAY2BGR)
 
+            selected_ids_display = ", ".join(str(obj['id']) for obj in selected_objects)
+            cv2.putText(entropy_vis_color, f"Fish IDs: {selected_ids_display}", (10, VIS_HEIGHT - 90),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 255, 0), 1)
             vis_text = f"Entropy Pool: {current_entropy_bits}/{ENTROPY_POOL_SIZE_BITS} bits"
             cv2.putText(entropy_vis_color, vis_text, (10, VIS_HEIGHT - 10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
@@ -143,6 +158,16 @@ def main():
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 200, 0), 1)
             cv2.putText(histogram_vis_color, "Byte Distribution", (10, 20),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 1)
+            
+            # --- Add runtime and keys saved info ---
+            elapsed_time = time.time() - start_time
+            minutes, seconds = divmod(int(elapsed_time), 60)
+            runtime_text = f"Runtime: {minutes}m {seconds}s"
+            cv2.putText(entropy_vis_color, runtime_text, (10, VIS_HEIGHT - 50),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+            keys_saved_text = f"Keys Saved: {keys_saved_count}"
+            cv2.putText(entropy_vis_color, keys_saved_text, (10, VIS_HEIGHT - 70),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
             
             # --- Dashboard Assembly ---
             # Resize visualization panes to match the video feed height for alignment
@@ -153,7 +178,7 @@ def main():
             dashboard = cv2.hconcat([video_feeds, resized_entropy_vis, resized_histogram_vis])
             cv2.imshow("Fish TRNG Dashboard", dashboard)
 
-            if (current_entropy_bits >= ENTROPY_POOL_SIZE_BITS) and (len(entropy_extractor.sources_seen) >= 2):
+            if (current_entropy_bits >= ENTROPY_POOL_SIZE_BITS) and (len(entropy_extractor.sources_seen) >= MIN_REQUIRED_SOURCES):
                 logging.info("--- Sufficient Entropy Collected ---")
 
                 context_meta = (current_stream_url or "").encode()[:64]
@@ -182,6 +207,7 @@ def main():
                 else:
                     with open(KEYS_OUTPUT_FILE, "a") as f:
                         f.write(secure_key.hex() + "\n")
+                    keys_saved_count += 1
                     logging.info(f"Key saved to {KEYS_OUTPUT_FILE}")
                     auditor.add_key(secure_key)
 
@@ -198,6 +224,19 @@ def main():
 
     finally:
         logging.info("Shutting down...")
+
+        # --- Append session summary to the keys file ---
+        if start_time and keys_saved_count > 0:
+            with open(KEYS_OUTPUT_FILE, "a") as f:
+                f.write("\n---\n")
+                f.write(f"Summary generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                elapsed_time = time.time() - start_time
+                minutes, seconds = divmod(int(elapsed_time), 60)
+                f.write(f"Total runtime: {minutes}m {seconds}s\n")
+                f.write(f"Keys generated in this session: {keys_saved_count}\n")
+                f.write("---\n")
+            logging.info(f"Appended session summary to {KEYS_OUTPUT_FILE}")
+
         video_capture.release()
         cv2.destroyAllWindows()
 

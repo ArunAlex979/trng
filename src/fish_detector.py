@@ -1,4 +1,5 @@
 import cv2
+import logging
 from ultralytics import YOLO
 import numpy as np
 from scipy.optimize import linear_sum_assignment
@@ -9,7 +10,7 @@ class FishDetector:
     YOLOv8 detection + Hungarian tracking, with static filtering and overlap suppression.
     """
 
-    def __init__(self, model_path='yolov8n.pt', max_disappeared=50, max_distance=75,
+    def __init__(self, model_path='yolov8n.pt', max_disappeared=100, max_distance=75,
                  static_speed_threshold=1.0, static_patience=15,
                  allowed_classes=None, min_area=60, max_area_ratio=0.25, iou_threshold=0.5):
         self.model = YOLO(model_path)
@@ -27,7 +28,7 @@ class FishDetector:
 
     def detect_and_track(self, frame):
         results = self.model(frame, verbose=False)
-        annotated_frame = results[0].plot()
+        annotated_frame = results[0].plot(labels=False)
 
         raw_boxes, confs = [], []
         for box in results[0].boxes:
@@ -105,6 +106,7 @@ class FishDetector:
                 self._register(centroids[col], detected_boxes[col])
 
         tracked_objects = self._get_tracked_objects()
+        logging.info(f"[Detector] Found {len(tracked_objects)} tracked objects in frame.")
         self._draw_objects(annotated_frame, tracked_objects)
         return tracked_objects, annotated_frame
 
