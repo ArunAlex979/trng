@@ -47,11 +47,10 @@ def main():
     auditor = KeyAuditor(min_batch=20, max_batch=50)
     logging.info("Initialization complete.")
 
-    last_key_gen_time = time.time()
     entropy_extractor.sources_seen = set()
 
-    FISH_SAMPLE_BASE = 0.6
-    FISH_SAMPLE_VAR = 0.15
+    stream_frames = {}
+    STREAM_HEIGHT = 480
 
     try:
         while True:
@@ -66,7 +65,7 @@ def main():
 
             tracked_objects, annotated_frame = fish_detector.detect_and_track(frame)
             if current_stream_url:
-                cv2.putText(annotated_frame, current_stream_url[:80], (10, 28),
+                cv2.putText(annotated_frame, current_stream_url, (10, 28),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2, cv2.LINE_AA)
 
             moving_objects = [obj for obj in tracked_objects if not obj.get("is_static", False)]
@@ -76,29 +75,62 @@ def main():
                 return float(np.linalg.norm([vx, vy]) + 1e-6)
 
             if moving_objects:
-                p = float(np.clip(np.random.normal(FISH_SAMPLE_BASE, FISH_SAMPLE_VAR), 0.15, 0.95))
-                num_to_sample = np.random.binomial(len(moving_objects), p)
-                if num_to_sample > 0:
-                    weights = np.array([motion_energy(o) for o in moving_objects], dtype=np.float64)
-                    weights = weights / (weights.sum() if weights.sum() > 0 else 1.0)
-                    idxs = np.random.choice(len(moving_objects), size=num_to_sample, replace=False, p=weights)
-                    sampled_objects = [moving_objects[i] for i in idxs]
+                weights = np.array([motion_energy(o) for o in moving_objects], dtype=np.float64)
+                weights = weights / (weights.sum() if weights.sum() > 0 else 1.0)
+                
+                entropy_extractor.extract_entropy(
+                    moving_objects, frame_width, frame_height, timestamp_ns, source_id=current_stream_url
+                )
+                if current_stream_url:
+                    entropy_extractor.sources_seen.add(current_stream_url)
 
-                    entropy_extractor.extract_entropy(
-                        sampled_objects, frame_width, frame_height, timestamp_ns, source_id=current_stream_url
-                    )
-                    if current_stream_url:
-                        entropy_extractor.sources_seen.add(current_stream_url)
+            if current_stream_url:
+                stream_frames[current_stream_url] = annotated_frame
+
+            # Create a combined view of all video feeds in a grid
+            active_feeds = list(stream_frames.values())
+            if active_feeds:
+                max_streams_per_row = 2
+                rows = []
+                current_row = []
+                
+                for feed in active_feeds:
+                    scale = STREAM_HEIGHT / feed.shape[0]
+                    new_width = int(feed.shape[1] * scale)
+                    resized = cv2.resize(feed, (new_width, STREAM_HEIGHT))
+                    current_row.append(resized)
+                    
+                    if len(current_row) == max_streams_per_row:
+                        rows.append(cv2.hconcat(current_row))
+                        current_row = []
+                
+                # Add the last row if it's not empty
+                if current_row:
+                    # Pad the last row to have the same width as the others
+                    num_missing = max_streams_per_row - len(current_row)
+                    if num_missing > 0 and rows:
+                        first_row_width = rows[0].shape[1]
+                        width_per_feed = first_row_width // max_streams_per_row
+                        for _ in range(num_missing):
+                            padding = np.zeros((STREAM_HEIGHT, width_per_feed, 3), dtype=np.uint8)
+                            current_row.append(padding)
+                    rows.append(cv2.hconcat(current_row))
+
+                if rows:
+                    video_feeds = cv2.vconcat(rows)
+                else:
+                    video_feeds = np.zeros((STREAM_HEIGHT, VIS_WIDTH, 3), dtype=np.uint8)
+
+            else:
+                # Placeholder if no feeds are available
+                video_feeds = np.zeros((STREAM_HEIGHT, VIS_WIDTH, 3), dtype=np.uint8)
+
 
             entropy_pool = entropy_extractor.get_entropy_pool()
             current_entropy_bits = len(entropy_pool) * 8
 
             entropy_bitmap = visualizer.generate_bitmap(entropy_pool)
             histogram_image = visualizer.generate_histogram(entropy_pool)
-
-            scale = VIS_HEIGHT / annotated_frame.shape[0]
-            new_width = int(annotated_frame.shape[1] * scale)
-            resized_feed = cv2.resize(annotated_frame, (new_width, VIS_HEIGHT))
 
             entropy_vis_color = cv2.cvtColor(entropy_bitmap, cv2.COLOR_GRAY2BGR)
             histogram_vis_color = cv2.cvtColor(histogram_image, cv2.COLOR_GRAY2BGR)
@@ -111,14 +143,18 @@ def main():
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 200, 0), 1)
             cv2.putText(histogram_vis_color, "Byte Distribution", (10, 20),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 1)
-
-            dashboard = cv2.hconcat([resized_feed, entropy_vis_color, histogram_vis_color])
+            
+            # --- Dashboard Assembly ---
+            # Resize visualization panes to match the video feed height for alignment
+            vis_height = video_feeds.shape[0]
+            resized_entropy_vis = cv2.resize(entropy_vis_color, (VIS_WIDTH, vis_height))
+            resized_histogram_vis = cv2.resize(histogram_vis_color, (VIS_WIDTH, vis_height))
+            
+            dashboard = cv2.hconcat([video_feeds, resized_entropy_vis, resized_histogram_vis])
             cv2.imshow("Fish TRNG Dashboard", dashboard)
 
-            ready = (current_entropy_bits >= ENTROPY_POOL_SIZE_BITS) and (len(entropy_extractor.sources_seen) >= 2)
-            if ready:
+            if (current_entropy_bits >= ENTROPY_POOL_SIZE_BITS) and (len(entropy_extractor.sources_seen) >= 2):
                 logging.info("--- Sufficient Entropy Collected ---")
-                logging.info(f"Time to collect: {time.time() - last_key_gen_time:.2f} seconds")
 
                 context_meta = (current_stream_url or "").encode()[:64]
                 secure_key = conditioner.condition_data(entropy_pool, context_meta=context_meta)
@@ -151,7 +187,6 @@ def main():
 
                 entropy_extractor.clear_entropy_pool()
                 entropy_extractor.sources_seen = set()
-                last_key_gen_time = time.time()
                 logging.info("-------------------------------------\n")
 
             key = cv2.waitKey(1) & 0xFF
