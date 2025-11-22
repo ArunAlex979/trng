@@ -71,12 +71,16 @@ class MultiVideoCapture:
             self.threads.append(t)
         logging.info(f"[Capture] Rotated in {len(chosen)} new workers.")
 
-    def get_frame(self):
-        try:
-            url, frame = self.frames.get(timeout=1.0)
-            return True, frame, url
-        except queue.Empty:
-            return False, None, None
+    def get_frames(self):
+        frames_by_url = {}
+        qsize = self.frames.qsize()
+        for _ in range(qsize):
+            try:
+                url, frame = self.frames.get_nowait()
+                frames_by_url[url] = frame
+            except queue.Empty:
+                break
+        return frames_by_url
 
     def release(self):
         for c in self.caps:

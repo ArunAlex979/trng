@@ -27,7 +27,7 @@ class FishDetector:
 
     def detect_and_track(self, frame):
         results = self.model(frame, verbose=False)
-        annotated_frame = results[0].plot()
+        annotated_frame = results[0].plot(labels=False)
 
         raw_boxes, confs = [], []
         for box in results[0].boxes:
@@ -152,13 +152,16 @@ class FishDetector:
         return tracked_objects
 
     def _draw_objects(self, frame, tracked_objects):
+        max_draw_disappeared = 10  # Only show red IDs for 10 frames
         for obj in tracked_objects:
+            if obj['disappeared'] > max_draw_disappeared:
+                continue
+
             centroid = obj['centroid']
             color = (128, 128, 128) if obj['is_static'] else ((0, 0, 255) if obj['disappeared'] > 0 else (0, 255, 0))
             text = f"ID {obj['id']}"
             cv2.putText(frame, text, (int(centroid[0] - 10), int(centroid[1] - 10)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-            cv2.circle(frame, (int(centroid[0]), int(centroid[1])), 4, color, -1)
 
     def _register(self, centroid, box):
         x1, y1, x2, y2 = box
