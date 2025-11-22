@@ -4,6 +4,7 @@ import logging
 import yt_dlp
 import threading
 import queue
+import time
 
 class MultiVideoCapture:
     def __init__(self, stream_urls_file, max_streams=3):
@@ -27,28 +28,47 @@ class MultiVideoCapture:
             return None
 
     def _worker(self, url):
-        direct = self._get_direct_stream_url(url)
-        if not direct:
-            logging.error(f"No direct URL for {url}")
-            return
-        cap = cv2.VideoCapture(direct)
-        if not cap.isOpened():
-            logging.error(f"Could not open {url}")
-            return
-        self.caps.append(cap)
-        self.active_urls.append(url)
-        logging.info(f"[Capture] Started worker for {url}")
+        backoff = 1
+        max_backoff = 60
+        
         while True:
-            ret, frame = cap.read()
-            if not ret:
-                logging.warning(f"[Capture] Frame read failed for {url}")
-                break
-            try:
-                self.frames.put((url, frame), timeout=0.2)
-            except queue.Full:
-                pass
-        cap.release()
-        logging.info(f"[Capture] Worker ended for {url}")
+            direct = self._get_direct_stream_url(url)
+            if not direct:
+                logging.error(f"No direct URL for {url}, retrying in {backoff}s...")
+                time.sleep(backoff)
+                backoff = min(backoff * 2, max_backoff)
+                continue
+            
+            cap = cv2.VideoCapture(direct)
+            if not cap.isOpened():
+                logging.error(f"Could not open {url}, retrying in {backoff}s...")
+                time.sleep(backoff)
+                backoff = min(backoff * 2, max_backoff)
+                continue
+            
+            # Reset backoff on success
+            backoff = 1
+            self.caps.append(cap)
+            if url not in self.active_urls:
+                self.active_urls.append(url)
+            
+            logging.info(f"[Capture] Started worker for {url}")
+            
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    logging.warning(f"[Capture] Frame read failed for {url}")
+                    break
+                try:
+                    self.frames.put((url, frame), timeout=0.2)
+                except queue.Full:
+                    pass
+            
+            cap.release()
+            logging.info(f"[Capture] Worker ended for {url}, restarting...")
+            # If the inner loop breaks (stream ended/failed), the outer loop will restart it
+            # Add a small delay before restarting to avoid rapid looping if it fails immediately
+            time.sleep(1)
 
     def _start_workers(self):
         chosen = random.sample(self.urls, self.max_streams)

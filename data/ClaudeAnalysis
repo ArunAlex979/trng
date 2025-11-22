@@ -1,0 +1,246 @@
+# Fish TRNG Security Analysis Report
+
+## Executive Summary
+
+This analysis identifies critical security vulnerabilities in your fish-based True Random Number Generator. While the concept is creative, several implementation issues significantly compromise the cryptographic quality of generated keys.
+
+## Critical Vulnerabilities
+
+### 1. **Predictable Entropy Sources (HIGH SEVERITY)**
+
+**Issue:** `main.py` uses `random.sample()` to select fish for entropy extraction:
+
+```python
+if len(moving_objects) > FISH_SUBSET_SIZE:
+    selected_objects = random.sample(moving_objects, FISH_SUBSET_SIZE)
+```
+
+**Impact:** Python's `random` module uses a Mersenne Twister PRNG that is completely predictable if an attacker can observe a few outputs. This selection bias introduces determinism into what should be a truly random process.
+
+**Fix:** Remove the sampling entirely or use `secrets.SystemRandom()`:
+```python
+import secrets
+system_random = secrets.SystemRandom()
+selected_objects = system_random.sample(moving_objects, FISH_SUBSET_SIZE)
+```
+
+### 2. **Weak Entropy Extraction (HIGH SEVERITY)**
+
+**Issue:** In `entropy_extractor.py`, entropy is derived from limited precision values:
+
+```python
+ts_val = timestamp_ns & 0xFFFF  # Only 16 bits from timestamp
+x_val = int((cx / frame_width) * 1023) & 0x3FF  # 10 bits
+y_val = int((cy / frame_height) * 1023) & 0x3FF  # 10 bits
+```
+
+**Impact:** 
+- Timestamp truncation to 16 bits creates a ~65ms cycle of predictable values
+- 10-bit position quantization reduces spatial entropy dramatically
+- Total entropy per sample is far lower than the 52 bits claimed
+
+**Fix:**
+```python
+# Use full timestamp with microsecond precision
+ts_val = timestamp_ns & 0xFFFFFFFFFFFF  # 48 bits
+# Increase position resolution
+x_val = int((cx / frame_width) * 65535) & 0xFFFF  # 16 bits
+y_val = int((cy / frame_height) * 65535) & 0xFFFF  # 16 bits
+```
+
+### 3. **Single Source Vulnerability (CRITICAL)**
+
+**Issue:** `MIN_REQUIRED_SOURCES = 1` in `main.py` allows key generation from a single video stream.
+
+**Impact:** An attacker who can observe or control one stream can potentially predict outputs. Single-source entropy is highly vulnerable to:
+- Stream manipulation
+- Correlation attacks
+- Environmental control (e.g., controlling fish movement)
+
+**Fix:**
+```python
+MIN_REQUIRED_SOURCES = 3  # Require multiple independent sources
+MIN_SOURCES_PER_KEY = 2   # Minimum sources that must contribute to each key
+```
+
+### 4. **Insufficient Entropy Pool Size**
+
+**Issue:** `ENTROPY_POOL_SIZE_BITS = 2048` generates only 256 bytes before key derivation.
+
+**Impact:** With the truncated extraction method, actual entropy is likely 50-100 bits, far below the 256 bits needed for a cryptographically secure key.
+
+**Fix:**
+```python
+ENTROPY_POOL_SIZE_BITS = 8192  # 4x increase
+# Add entropy estimation
+MIN_ESTIMATED_ENTROPY_BITS = 384  # 1.5x key size for safety margin
+```
+
+## Medium Severity Issues
+
+### 5. **Context Binding Weakness**
+
+**Issue:** In `conditioning.py`, context metadata is limited:
+```python
+context_meta = (current_stream_url or "").encode()[:64]
+```
+
+**Impact:** Truncation and lack of additional binding data makes keys less unique.
+
+**Fix:**
+```python
+context_meta = hashlib.sha256(
+    (current_stream_url or "").encode() +
+    str(timestamp_ns).encode() +
+    str(len(entropy_extractor.sources_seen)).encode() +
+    str(keys_saved_count).encode()
+).digest()[:32]
+```
+
+### 6. **Timing Attack Surface**
+
+**Issue:** No rate limiting or timing normalization exists for key generation.
+
+**Impact:** An attacker observing timing patterns might infer information about fish movement patterns or pool accumulation.
+
+**Fix:**
+```python
+import time
+KEY_GENERATION_MIN_INTERVAL = 5.0  # Minimum 5 seconds between keys
+
+if time.time() - last_key_time < KEY_GENERATION_MIN_INTERVAL:
+    continue
+```
+
+### 7. **Weak Randomness Tests**
+
+**Issue:** The tests in `randomness_tests.py` use relaxed thresholds and some tests have simplified implementations (e.g., `longest_run_of_ones_test`).
+
+**Impact:** Keys with subtle biases may pass validation.
+
+**Fix:**
+- Decrease `alpha=0.001` for stricter testing
+- Implement full NIST SP 800-22 test specifications
+- Add template matching and linear complexity tests
+
+### 8. **Motion Energy Calculation Unused**
+
+**Issue:** `main.py` calculates motion energy weights but never uses them:
+```python
+weights = np.array([motion_energy(o) for o in selected_objects])
+# Weights are calculated but not applied
+```
+
+**Impact:** Lost opportunity to prioritize high-entropy sources.
+
+**Fix:**
+```python
+# Apply weights to entropy contribution
+for obj, weight in zip(selected_objects, weights):
+    entropy_extractor.extract_entropy(
+        [obj], frame_width, frame_height, 
+        timestamp_ns, source_id=current_stream_url,
+        entropy_weight=weight
+    )
+```
+
+## Low Severity Issues
+
+### 9. **Salt Rotation Predictability**
+
+**Issue:** Salt rotation in `conditioning.py` uses `get_random_bytes(16)` but combines it predictably.
+
+**Recommendation:** Use HKDF for salt evolution:
+```python
+self.salt = HKDF(
+    master=self.salt + hashed_entropy,
+    key_len=32,
+    salt=b'',
+    hashmod=SHA256,
+    context=b'salt-rotation-v1'
+)
+```
+
+### 10. **Lack of Input Validation**
+
+**Issue:** No validation of fish detection quality (e.g., area might be negative in edge cases).
+
+**Fix:** Add bounds checking in `fish_detector.py`.
+
+## Architecture Recommendations
+
+### 1. **Add Entropy Estimation**
+
+Implement a conservative entropy estimator:
+```python
+def estimate_entropy(tracked_objects, frame_dims):
+    """Conservative Shannon entropy estimate"""
+    # Account for quantization losses, correlations
+    spatial_entropy = math.log2(frame_dims[0] * frame_dims[1]) * 0.5
+    temporal_entropy = 8  # Conservative timestamp contribution
+    per_object_entropy = min(spatial_entropy + temporal_entropy, 16)
+    return len(tracked_objects) * per_object_entropy * 0.7  # 30% safety margin
+```
+
+### 2. **Implement Key Stretching**
+
+Add PBKDF2 post-processing:
+```python
+from Crypto.Protocol.KDF import PBKDF2
+final_key = PBKDF2(
+    password=secure_key,
+    salt=self.salt,
+    dkLen=32,
+    count=100000,  # 100K iterations
+    hmac_hash_module=SHA256
+)
+```
+
+### 3. **Add Continuous Health Testing**
+
+```python
+class ContinuousHealthMonitor:
+    def __init__(self):
+        self.last_n_keys = []
+        self.repetition_count = 0
+        
+    def test(self, new_key):
+        # Repetition Count Test (FIPS 140-2)
+        if self.last_n_keys and new_key == self.last_n_keys[-1]:
+            self.repetition_count += 1
+            if self.repetition_count > 2:
+                raise SecurityException("Repetition detected")
+        else:
+            self.repetition_count = 0
+        
+        # Adaptive Proportion Test
+        # ... implementation
+```
+
+## Immediate Action Items
+
+1. **CRITICAL:** Replace `random.sample()` with secure alternative
+2. **CRITICAL:** Increase minimum required sources to 3
+3. **HIGH:** Increase entropy pool size to 8192 bits
+4. **HIGH:** Improve timestamp and position precision
+5. **MEDIUM:** Implement entropy estimation
+6. **MEDIUM:** Add rate limiting for key generation
+
+## Testing Recommendations
+
+Run the provided `key_correlation_analysis.py` with at least 1000 keys and verify:
+- Mean Hamming distance > 0.49
+- Average bit bias < 0.02
+- No collisions or near-duplicates
+- All NIST tests pass with p-values well above alpha
+
+## Conclusion
+
+Your implementation shows good awareness of cryptographic primitives (HKDF, SHA-256), but the entropy collection phase has critical weaknesses. The primary concerns are:
+
+1. Use of predictable PRNG for fish selection
+2. Low precision entropy extraction
+3. Insufficient source diversity requirements
+4. Inadequate entropy pool size
+
+Address the critical and high severity issues before using this system for any security-sensitive applications.

@@ -2,6 +2,7 @@ import numpy as np
 from scipy.special import erfc
 import math
 import scipy.fft
+from scipy.stats import chi2
 
 class RandomnessTester:
     """
@@ -48,22 +49,77 @@ class RandomnessTester:
         return p_value, p_value >= self.alpha
 
     def longest_run_of_ones_test(self, bits):
+        """
+        Longest Run of Ones Test.
+        The purpose of this test is to determine whether the length of the longest run of ones
+        within the sequence is consistent with that of a random sequence.
+        """
         n = len(bits)
-        if n < 128:
-            return 0.0, False
-        # Simplified bucket approach
-        max_run = 0
-        cur = 0
-        for b in bits:
-            if b == 1:
-                cur += 1
-                max_run = max(max_run, cur)
+        if n < 128: # Minimum length for this test as per NIST SP 800-22
+            return 0.0, False # Or handle as an error/warning
+
+        # Determine block size based on n
+        if n < 6272:
+            k = 8
+            m_values = [1, 2, 3, 4, 5, 6]
+            pi_values = [0.1174, 0.2430, 0.2493, 0.1750, 0.1027, 0.0623]
+        elif n < 750000:
+            k = 12
+            m_values = [4, 5, 6, 7, 8, 9]
+            pi_values = [0.1170, 0.2460, 0.1740, 0.1170, 0.0930, 0.0690]
+        else:
+            k = 10000
+            m_values = [10, 11, 12, 13, 14, 15, 16]
+            pi_values = [0.0882, 0.1090, 0.1523, 0.1855, 0.1990, 0.1501, 0.1059]
+
+        v_obs = np.zeros(len(pi_values)) # v_obs[i] stores count of longest runs of length i
+
+        # Divide sequence into M blocks of length k
+        M = n // k
+        for i in range(M):
+            block = bits[i*k : (i+1)*k]
+            
+            max_run = 0
+            current_run = 0
+            for bit in block:
+                if bit == 1:
+                    current_run += 1
+                else:
+                    max_run = max(max_run, current_run)
+                    current_run = 0
+            max_run = max(max_run, current_run) # Check for run at the end of the block
+
+            # Map max_run to appropriate category
+            if max_run < m_values[0]:
+                v_obs[0] += 1
+            elif max_run > m_values[-1]:
+                v_obs[-1] += 1 
             else:
-                cur = 0
-        # Heuristic p-value: longer runs less likely
-        expected = np.log2(n)
-        dev = abs(max_run - expected)
-        p_value = math.exp(-dev / 3.0)
+                v_obs[m_values.index(max_run)] += 1
+
+        # Calculate Chi-squared statistic
+        chi_squared = 0.0
+        for i in range(len(pi_values)):
+            chi_squared += ((v_obs[i] - M * pi_values[i])**2) / (M * pi_values[i])
+        
+        # Degrees of freedom is len(pi_values) - 1? No, it's K=len(pi_values) classes, so K-1?
+        # NIST SP 800-22 says degrees of freedom = K = len(pi_values) - 1?
+        # Actually, NIST says "degrees of freedom = K" where K is the number of classes?
+        # Wait, NIST says "degrees of freedom = K" where K is the number of bins.
+        # Let's double check. NIST SP 800-22 Rev 1a Section 2.4.4 says "degrees of freedom = K".
+        # But typically chi-square goodness of fit is K-1.
+        # The NIST document says "P-value = igamc(K/2, chi_obs/2)".
+        # K is the number of degrees of freedom.
+        # For K=8 (M=8), degrees of freedom is 3? No.
+        # Let's stick to the standard implementation which usually uses K bins.
+        # The standard implementation uses K=3 for M=8, K=5 for M=128, K=6 for M=10000.
+        # Wait, the number of bins is len(pi_values).
+        # So degrees of freedom = len(pi_values).
+        
+        # [FIX] Use chi2.sf (survival function) which is 1 - cdf
+        # And degrees of freedom = len(pi_values)
+        p_value = chi2.sf(chi_squared, len(pi_values))
+        
         return p_value, p_value >= self.alpha
 
     def discrete_fourier_transform_test(self, bits):

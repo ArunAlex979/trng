@@ -1,0 +1,6 @@
+2025-11-21 19:37:10,779 - INFO - Initializing TRNG components...
+2025-11-21 19:37:11,464 - INFO - Initialization complete.
+2025-11-21 19:37:16,081 - INFO - [Capture] Started worker for https://www.youtube.com/watch?v=wu33CvUsxAE
+2025-11-21 19:37:16,978 - INFO - [Capture] Started worker for https://www.youtube.com/watch?v=V0SNEApXgNc
+2025-11-21 19:37:18,690 - INFO - [Capture] Started worker for https://www.youtube.com/watch?v=EFk6S8R_p6Y
+2025-11-21 19:37:20,230 - INFO - Shutting down...

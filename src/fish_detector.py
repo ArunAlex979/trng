@@ -1,3 +1,4 @@
+
 import cv2
 import logging
 from ultralytics import YOLO
@@ -7,12 +8,16 @@ from scipy.spatial.distance import cdist
 
 class FishDetector:
     """
-    YOLOv8 detection + Hungarian tracking, with static filtering and overlap suppression.
+    Detects and tracks fish in video frames using YOLOv8 and the Hungarian algorithm for tracking.
+    Includes logic to filter out static (non-moving) objects.
     """
 
-    def __init__(self, model_path='yolov8n.pt', max_disappeared=100, max_distance=75,
+    def __init__(self, model_path='yolov8n.pt', max_disappeared=50, max_distance=75, 
                  static_speed_threshold=1.0, static_patience=15,
-                 allowed_classes=None, min_area=60, max_area_ratio=0.25, iou_threshold=0.5):
+                 allowed_classes=None, min_area=0, max_area_ratio=1.0, iou_threshold=0.5):
+        """
+        Initializes the FishDetector.
+        """
         self.model = YOLO(model_path)
         self.next_object_id = 0
         self.objects = {}
@@ -21,30 +26,44 @@ class FishDetector:
         self.static_speed_threshold = static_speed_threshold
         self.static_patience = static_patience
 
-        self.allowed_classes = allowed_classes or []
+        self.allowed_classes = allowed_classes
         self.min_area = min_area
         self.max_area_ratio = max_area_ratio
         self.iou_threshold = iou_threshold
 
     def detect_and_track(self, frame):
+        """
+        Detects and tracks fish in a single frame.
+        """
         results = self.model(frame, verbose=False)
-        annotated_frame = results[0].plot(labels=False)
+        annotated_frame = results[0].plot()
+        
+        frame_area = frame.shape[0] * frame.shape[1]
 
-        raw_boxes, confs = [], []
+        detected_boxes = []
         for box in results[0].boxes:
-            conf = float(box.conf[0])
-            class_id = int(box.cls[0])
-            if self.allowed_classes and class_id not in self.allowed_classes:
-                continue
-            x1, y1, x2, y2 = [int(i) for i in box.xyxy[0]]
-            area = (x2 - x1) * (y2 - y1)
-            frame_area = frame.shape[0] * frame.shape[1]
-            if area < self.min_area or (area / frame_area) > self.max_area_ratio:
-                continue
-            raw_boxes.append((x1, y1, x2, y2))
-            confs.append(conf)
+            if box.conf > 0.3:
+                class_id = int(box.cls[0])
+                
+                if self.allowed_classes and class_id not in self.allowed_classes:
+                    continue
 
-        detected_boxes = self._suppress_overlaps(raw_boxes, confs, self.iou_threshold)
+                x1, y1, x2, y2 = [int(i) for i in box.xyxy[0]]
+                
+                # [IMPROVEMENT] Bounds checking
+                x1 = max(0, x1)
+                y1 = max(0, y1)
+                x2 = min(frame.shape[1], x2)
+                y2 = min(frame.shape[0], y2)
+                
+                area = (x2 - x1) * (y2 - y1)
+                
+                # [IMPROVEMENT] Sanity checks
+                if area < self.min_area or area > (frame_area * self.max_area_ratio):
+                    continue
+                
+                detected_boxes.append((x1, y1, x2, y2))
+
         centroids = np.array([((x1 + x2) / 2.0, (y1 + y2) / 2.0) for x1, y1, x2, y2 in detected_boxes])
 
         if len(centroids) == 0:
@@ -52,6 +71,7 @@ class FishDetector:
                 self.objects[object_id]['disappeared'] += 1
                 if self.objects[object_id]['disappeared'] > self.max_disappeared:
                     self._deregister(object_id)
+            
             tracked_objects = self._get_tracked_objects()
             self._draw_objects(annotated_frame, tracked_objects)
             return tracked_objects, annotated_frame
@@ -66,13 +86,17 @@ class FishDetector:
             D = cdist(previous_centroids, centroids)
             rows, cols = linear_sum_assignment(D)
 
-            used_rows, used_cols = set(), set()
+            used_rows = set()
+            used_cols = set()
+
             for (row, col) in zip(rows, cols):
                 if D[row, col] > self.max_distance:
                     continue
+
                 object_id = object_ids[row]
                 new_centroid = centroids[col]
                 old_centroid = self.objects[object_id]['centroid']
+                
                 speed_vector = (new_centroid[0] - old_centroid[0], new_centroid[1] - old_centroid[1])
                 speed = np.linalg.norm(speed_vector)
 
@@ -101,13 +125,13 @@ class FishDetector:
                 self.objects[object_id]['speed_vector'] = (0, 0)
                 if self.objects[object_id]['disappeared'] > self.max_disappeared:
                     self._deregister(object_id)
-
+            
             for col in unused_cols:
                 self._register(centroids[col], detected_boxes[col])
-
+        
         tracked_objects = self._get_tracked_objects()
-        logging.info(f"[Detector] Found {len(tracked_objects)} tracked objects in frame.")
         self._draw_objects(annotated_frame, tracked_objects)
+
         return tracked_objects, annotated_frame
 
     def _suppress_overlaps(self, boxes, confs, iou_thr):
@@ -139,6 +163,7 @@ class FishDetector:
         return keep
 
     def _get_tracked_objects(self):
+        """Helper to format the list of tracked objects."""
         tracked_objects = []
         for (object_id, obj) in self.objects.items():
             is_static = obj['static_frames'] > self.static_patience
@@ -154,15 +179,25 @@ class FishDetector:
         return tracked_objects
 
     def _draw_objects(self, frame, tracked_objects):
+        """Helper to draw object information on the frame."""
         for obj in tracked_objects:
             centroid = obj['centroid']
-            color = (128, 128, 128) if obj['is_static'] else ((0, 0, 255) if obj['disappeared'] > 0 else (0, 255, 0))
+            
+            if obj['is_static']:
+                color = (128, 128, 128) # Gray for static
+            elif obj['disappeared'] > 0:
+                color = (0, 0, 255) # Red for disappeared
+            else:
+                color = (0, 255, 0) # Green for active
+
             text = f"ID {obj['id']}"
+            
             cv2.putText(frame, text, (int(centroid[0] - 10), int(centroid[1] - 10)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
             cv2.circle(frame, (int(centroid[0]), int(centroid[1])), 4, color, -1)
 
     def _register(self, centroid, box):
+        """Registers a new object."""
         x1, y1, x2, y2 = box
         self.objects[self.next_object_id] = {
             'centroid': centroid,
@@ -176,5 +211,6 @@ class FishDetector:
         self.next_object_id += 1
 
     def _deregister(self, object_id):
+        """Deregisters an object."""
         if object_id in self.objects:
             del self.objects[object_id]
