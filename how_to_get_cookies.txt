@@ -1,0 +1,47 @@
+To obtain the `cookies.txt` file locally for this application, follow these general steps using your web browser. This process usually involves exporting cookies from your browser's developer tools or using a browser extension.
+
+**Method 1: Using Browser Developer Tools (e.g., Chrome, Firefox)**
+
+1.  **Open Developer Tools:**
+    *   Navigate to the website you want to get cookies from in your browser.
+    *   Right-click anywhere on the page and select "Inspect" or "Inspect Element" (or press `F12` or `Ctrl+Shift+I`/`Cmd+Option+I`).
+
+2.  **Go to the Network Tab:**
+    *   In the Developer Tools window, go to the "Network" tab.
+
+3.  **Refresh the Page:**
+    *   With the Network tab open, refresh the webpage (F5 or Ctrl+R/Cmd+R). This will capture all network requests.
+
+4.  **Find a Request and Copy Cookies:**
+    *   Click on any of the requests (preferably the main document request) in the Network tab.
+    *   Look for the "Headers" tab in the right-hand panel.
+    *   Scroll down to the "Request Headers" section and find the `Cookie` header.
+    *   Copy the entire string value of the `Cookie` header. This string contains all the cookies for that domain.
+
+5.  **Format for `cookies.txt`:**
+    *   The copied cookie string is usually in a format like `cookie1=value1; cookie2=value2; ...`.
+    *   You will need to convert this into the Netscape `cookies.txt` format. This format is typically:
+        `# Netscape HTTP Cookie File`
+        `# This is a generated file! Do not edit.`
+        `<domain><TAB><flag><TAB><path><TAB><secure><TAB><expiration><TAB><name><TAB><value>`
+    *   Manually parsing this can be tedious. It's often easier to use a browser extension for exporting.
+
+**Method 2: Using Browser Extensions (Recommended)**
+
+Many browser extensions are available that can export cookies in the Netscape `cookies.txt` format directly.
+
+*   **For Chrome:** Search the Chrome Web Store for extensions like "EditThisCookie" or "Get cookies.txt".
+*   **For Firefox:** Search Firefox Add-ons for extensions like "Cookies.txt export".
+
+**General Steps for Extensions:**
+
+1.  **Install the Extension:** Install a suitable cookie export extension for your browser. https://chromewebstore.google.com/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc 
+2.  **Navigate to the Website:** Go to the website from which you need to extract cookies.
+3.  **Use the Extension:** Click on the extension icon in your browser toolbar. It will typically have an option to "Export" or "Save" cookies.
+4.  **Save as `cookies.txt`:** Save the exported file, ensuring it is named `cookies.txt`.
+
+**Important Considerations:**
+
+*   **Security:** Be cautious when handling `cookies.txt` files, as they contain sensitive session information. Do not share them publicly.
+*   **Expiration:** Cookies have an expiration date. If the `cookies.txt` becomes old, you might need to regenerate it.
+*   **Domain Specificity:** Cookies are tied to specific domains. Ensure you are getting cookies from the correct domain for your application.

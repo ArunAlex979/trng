@@ -24,7 +24,10 @@ class StreamProcessor(threading.Thread):
 
     def _get_direct_stream_url(self):
         """Uses yt-dlp to get the direct streamable URL."""
-        ydl_opts = {'format': 'best', 'quiet': True}
+        ydl_opts = {
+            'format': 'best',
+            'cookiefile': 'cookies.txt'
+        }
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(self.stream_url, download=False)
